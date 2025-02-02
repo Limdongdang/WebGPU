@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>WebGPU Life</title>
+  </head>
+  <body>
+    <canvas width="512" height="512"></canvas>
+    <script type="module">
+      const canvas = document.querySelector("canvas");
+
+      // WebGPU code 여기서부터 시작
+      if (!navigator.gpu) {
+        throw new Error("WebGPU not supported on this browser.");
+      }
+
+      // GPUAdapter 요청
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) {
+        throw new Error("No appropriate GPUAdapter found.");
+      }
+
+      // GPUDevice 요청
+      const device = await adapter.requestDevice();
+
+      // GPUContext 설정
+      const context = canvas.getContext("webgpu");
+      const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+      context.configure({
+        device: device,
+        format: canvasFormat,
+      });
+
+      // GPUCommandEncoder 생성
+      const encoder = device.createCommandEncoder();
+
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: context.getCurrentTexture().createView(),
+            loadOp: "clear",
+            storeOp: "store",
+          },
+        ],
+      });
+
+      pass.end();
+
+      // GPUCommandBuffer 생성
+      const commandBuffer = encoder.finish();
+      // GPUQueue 생성 및 GPUCommandBuffer 제출
+      device.queue.submit([commandBuffer]);
+    </script>
+  </body>
+</html>
