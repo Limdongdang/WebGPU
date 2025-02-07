@@ -4,6 +4,17 @@
   <head>
     <meta charset="utf-8" />
     <title>WebGPU Life</title>
+    <style>
+      html, body {
+        margin: 0;
+        height: 100%;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
   </head>
   <body>
     <canvas width="512" height="512"></canvas>
@@ -16,13 +27,17 @@
       }
 
       // GPUAdapter 요청
-      const adapter = await navigator.gpu.requestAdapter();
+      const adapter = await navigator.gpu?.requestAdapter();
       if (!adapter) {
         throw new Error("No appropriate GPUAdapter found.");
       }
 
       // GPUDevice 요청
       const device = await adapter.requestDevice();
+
+      if (!device) {
+        throw new Error("No appropriate GPUDevice found.");
+      }
 
       // GPUContext 설정
       const context = canvas.getContext("webgpu");
@@ -32,94 +47,98 @@
         format: canvasFormat,
       });
 
-      const vertices = new Float32Array([
-      //   X,    Y,
-        -0.8, -0.8, // Triangle 1 (Blue)
-        0.8, -0.8,
-        0.8,  0.8,
+      const module = device.createShaderModule({
+        label : "rgb triangle",
+        code : `
+          struct Vertex_output {
+            @builtin(position) position : vec4f,
+            @location(0) color : vec4f,
+          };
 
-        -0.8, -0.8, // Triangle 2 (Red)
-        0.8,  0.8,
-        -0.8,  0.8,
-      ]);
-
-      // GPUBuffer 생성
-      const vertexBuffer = device.createBuffer({
-        label: "Cell vertices",
-        size: vertices.byteLength,
-        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-      });
-
-      // GPUBuffer에 데이터 복사
-      device.queue.writeBuffer(vertexBuffer, /*bufferOffset=*/0, vertices);
-
-      // GPUVertexBufferLayout 설정
-      const vertexBufferLayout = {
-        arrayStride: 8,
-        attributes: [{
-          format: "float32x2",
-          offset: 0,
-          shaderLocation: 0, // Position, see vertex shader
-        }],
-      };
-
-      const cellShaderModule = device.createShaderModule({
-        label: "Cell shader",
-        code: `
-          // Your shader code will go here
           @vertex
-          fn vertexMain(@location(0) pos: vec2f) ->
-            @builtin(position) vec4f {
-            return vec4f(pos, 0, 1); // (pos.x, pos.y, 0, 1)
-          }
+          fn vertex_shader(@builtin(vertex_index) vertexIndex : u32) -> Vertex_output {
+            let pos = array(
+              vec2<f32>(0.0, 0.5),
+              vec2<f32>(0.5, -0.5),
+              vec2<f32>(-0.5, -0.5)
+            );
 
+            var color = array<vec4f, 3>(
+              vec4f(1.0, 0.0, 0.0, 1.0),
+              vec4f(0.0, 0.0, 1.0, 1.0),
+              vec4f(0.0, 1.0, 0.0, 1.0)
+            );
+
+            var vsOutput : Vertex_output;
+            vsOutput.position = vec4f(pos[vertexIndex], 0.0, 1.0);
+            vsOutput.color = color[vertexIndex];
+            return vsOutput;
+          }
+          
           @fragment
-          fn fragmentMain() -> @location(0) vec4f {
-            return vec4f(1, 0, 0, 1); // (Red, Green, Blue, Alpha)
+          fn fragment_shader(fsInput : Vertex_output) -> @location(0) vec4f{
+            return fsInput.color;
           }
         `
-      });
+      })
 
-      const cellPipeline = device.createRenderPipeline({
-        label: "Cell pipeline",
-        layout: "auto",
-        vertex: {
-          module: cellShaderModule,
-          entryPoint: "vertexMain",
-          buffers: [vertexBufferLayout]
+      const pipeline = device.createRenderPipeline({
+        label : "red triangle",
+        layout : 'auto',
+        vertex : {
+          module : module,
+          entryPoint : "vertex_shader"
         },
-        fragment: {
-          module: cellShaderModule,
-          entryPoint: "fragmentMain",
-          targets: [{
-            format: canvasFormat
-          }]
+        fragment : {
+          module : module,
+          entryPoint : "fragment_shader",
+          targets : [
+            {
+              format : canvasFormat
+            }
+          ]
+        },
+      })
+
+      const renderPassDescriptor = {
+        label: "basic renderPass",
+        colorAttachments: [
+          {
+            clearValue: [0.3, 0.3, 0.3, 1],
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+      }
+
+      function render(){
+        renderPassDescriptor.colorAttachments[0].view = context.getCurrentTexture().createView();
+
+        const encoder = device.createCommandEncoder({ label : "encoder"});
+
+        const pass = encoder.beginRenderPass(renderPassDescriptor);
+        pass.setPipeline(pipeline);
+        pass.draw(3);
+        pass.end();
+
+        const commandBuffer = encoder.finish();
+        device.queue.submit([commandBuffer]);
+      }
+
+      const observer = new ResizeObserver(entries => {
+        for (const entry of entries){
+          const canvas = entry.target;
+          const width = entry.contentBoxSize[0].inlineSize;
+          const height = entry.contentBoxSize[0].blockSize;
+          canvas.width = Math.max(1, Math.min(width, device.limits.maxTextureDimension2D));
+          canvas.height = Math.max(1, Math.min(height, device.limits.maxTextureDimension2D));
+
+          render();
         }
       });
 
-      // GPUCommandEncoder 생성
-      const encoder = device.createCommandEncoder();
+      observer.observe(canvas);
 
-      const pass = encoder.beginRenderPass({
-        colorAttachments: [
-          {
-            view: context.getCurrentTexture().createView(),
-            loadOp: "clear",
-            clearValue: { r: 0.0, g: 0.0, b: 0.4, a: 1.0 },
-            storeOp: "store",
-          },
-        ],
-      });
-      pass.setPipeline(cellPipeline);
-      pass.setVertexBuffer(0, vertexBuffer);
-      pass.draw(vertices.length / 2); // 6 vertices
-
-      pass.end();
-
-      // GPUCommandBuffer 생성
-      const commandBuffer = encoder.finish();
-      // GPUQueue 생성 및 GPUCommandBuffer 제출
-      device.queue.submit([commandBuffer]);
     </script>
   </body>
 </html>
